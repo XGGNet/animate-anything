@@ -52,8 +52,6 @@ from utils.common import read_mask, generate_random_mask, slerp, calculate_motio
     read_video, calculate_motion_precision, calculate_latent_motion_score, \
     DDPM_forward, DDPM_forward_timesteps, motion_mask_loss
 
-from utils.dataset import EchoVideo 
-
 already_printed_trainables = False
 
 logger = get_logger(__name__, log_level="INFO")
@@ -296,8 +294,6 @@ def enforce_zero_terminal_snr(betas):
 def should_sample(global_step, validation_steps, validation_data):
     return (global_step % validation_steps == 0 or global_step == 5)  \
     and validation_data.sample_preview
-    # return (global_step % validation_steps == 0)  \
-    # and validation_data.sample_preview
 
 def save_pipe(
         path, 
@@ -361,16 +357,16 @@ def finetune_unet(accelerator, pipeline, batch, use_offset_noise,
     bsz, num_frames = pixel_values.shape[:2]
     bsz, num_frames, c, h, w = pixel_values.shape
     
-
+    
     # # TODO 
-    # # Reshape to [b*f, c, h, w] for resizing
-    # pixel_values_reshaped = pixel_values.view(-1, c, h, w)
+    # Reshape to [b*f, c, h, w] for resizing
+    pixel_values_reshaped = pixel_values.view(-1, c, h, w)
 
-    # # Resize to (128, 128)
-    # pixel_values_resized = _resize_with_antialiasing(pixel_values_reshaped, (128, 128)).to(dtype)
+    # Resize to (128, 128)
+    pixel_values_resized = _resize_with_antialiasing(pixel_values_reshaped, (128, 128)).to(dtype)
 
-    # # Reshape back to [b, f, c, 128, 128]
-    # pixel_values = pixel_values_resized.view(bsz, num_frames, c, 128, 128)
+    # Reshape back to [b, f, c, 128, 128]
+    pixel_values = pixel_values_resized.view(bsz, num_frames, c, 128, 128)
     
 
     frames = rearrange(pixel_values, 'b f c h w-> (b f) c h w').to(dtype)
@@ -572,33 +568,30 @@ def main(
     )
 
     # Get the training dataset based on types (json, single_video, image)
-    # train_datasets = get_train_dataset(dataset_types, train_data, tokenizer)
+    train_datasets = get_train_dataset(dataset_types, train_data, tokenizer)
 
     # If you have extra train data, you can add a list of however many you would like.
     # Eg: extra_train_data: [{: {dataset_types, train_data: {etc...}}}] 
-    # try:
-    #     if extra_train_data is not None and len(extra_train_data) > 0:
-    #         for dataset in extra_train_data:
-    #             d_t, t_d = dataset['dataset_types'], dataset['train_data']
-    #             train_datasets += get_train_dataset(d_t, t_d, tokenizer)
+    try:
+        if extra_train_data is not None and len(extra_train_data) > 0:
+            for dataset in extra_train_data:
+                d_t, t_d = dataset['dataset_types'], dataset['train_data']
+                train_datasets += get_train_dataset(d_t, t_d, tokenizer)
 
-    # except Exception as e:
-    #     print(f"Could not process extra train datasets due to an error : {e}")
+    except Exception as e:
+        print(f"Could not process extra train datasets due to an error : {e}")
 
     # Extend datasets that are less than the greatest one. This allows for more balanced training.
-    # attrs = ['train_data', 'frames', 'image_dir', 'video_files']
-    # extend_datasets(train_datasets, attrs, extend=extend_dataset)
-    
+    attrs = ['train_data', 'frames', 'image_dir', 'video_files']
+    extend_datasets(train_datasets, attrs, extend=extend_dataset)
 
     # Process one dataset
-    # if len(train_datasets) == 1:
-    #     train_dataset = train_datasets[0]
+    if len(train_datasets) == 1:
+        train_dataset = train_datasets[0]
     
-    # # Process many datasets
-    # else:
-    #     train_dataset = torch.utils.data.ConcatDataset(train_datasets) 
-    
-    train_dataset = EchoVideo(kwargs, splits=["TRAIN"])
+    # Process many datasets
+    else:
+        train_dataset = torch.utils.data.ConcatDataset(train_datasets) 
 
     # DataLoaders creation:
     train_dataloader = torch.utils.data.DataLoader(
@@ -711,10 +704,10 @@ def main(
 
                 if should_sample(global_step, validation_steps, validation_data):
                     if global_step == 1: print("Performing validation prompt.")
-                    
                     if accelerator.is_main_process:
+                        
                         with accelerator.autocast():
-                            curr_dataset_name = 'echo_svd'
+                            curr_dataset_name = batch['dataset'][0]
                             save_filename = f"{global_step}_dataset-{curr_dataset_name}"
                             out_file = f"{output_dir}/samples/{save_filename}.gif"
                             eval(pipeline, vae_processor, validation_data, out_file, global_step)
@@ -806,24 +799,12 @@ def eval(pipeline, vae_processor, validation_data, out_file, index, forward_t=25
                 decode_chunk_size=validation_data.decode_chunk_size,
                 motion_bucket_id=validation_data.motion_bucket_id,
             ).frames[0]
-            
-            # video_frames = pipeline(
-            #     image=pimg,
-            #     # width=validation_data.width,
-            #     # height=validation_data.height,
-            #     num_frames=validation_data.num_frames,
-            #     num_inference_steps=validation_data.num_inference_steps,
-            #     fps=validation_data.fps,
-            #     decode_chunk_size=validation_data.decode_chunk_size,
-            #     motion_bucket_id=validation_data.motion_bucket_id,
-            # ).frames[0]
     
     if preview:
         fps = validation_data.get('fps', 8)
         imageio.mimwrite(out_file, video_frames, duration=int(1000/fps), loop=0)
         imageio.mimwrite(out_file.replace('.gif', '.mp4'), video_frames, fps=fps)
     return 0
-
 
 def main_eval(
     pretrained_model_path: str,
